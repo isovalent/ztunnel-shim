@@ -1,0 +1,3 @@
+[submodule "ztunnel"]
+	path = ztunnel
+	url = https://github.com/istio/ztunnel.git
