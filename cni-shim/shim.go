@@ -22,8 +22,8 @@ import (
 //
 // The Shim implements the unix socket and protocol the ZTunnel expects.
 type Shim struct {
-	l         net.Listener
-	netnsPath string
+	l          net.Listener
+	netnsPaths []string
 }
 
 func (s *Shim) readAck(buf []byte) error {
@@ -180,29 +180,33 @@ func (s *Shim) listen(ctx context.Context, wg *sync.WaitGroup) {
 			goto cleanup
 		}
 
-		// open our configured network namespace fd and send it over to ztunnel
-		// in an AddWorkload request. The FD will be sent via ancillary data.
-		if err = s.writeAddWorkload(conn, s.netnsPath); err != nil {
-			log.Printf("failed to handle add workload message: %v. Closing connection", err)
-			goto cleanup
+		for _, p := range s.netnsPaths {
+			log.Printf("path: %v", p)
+
+			// send a workload add for each netns path
+			if err = s.writeAddWorkload(conn, p); err != nil {
+				log.Printf("failed to handle add workload message: %v. Closing connection", err)
+				goto cleanup
+			}
+
+			// wait for ack
+			n, err = conn.Read(buf)
+			if err = s.readAck(buf[:n]); err != nil {
+				log.Printf("failed to handle ack message: %v. Closing connection", err)
+				goto cleanup
+			}
 		}
 
-		// wait for ack
-		n, err = conn.Read(buf)
-		if err = s.readAck(buf[:n]); err != nil {
-			log.Printf("failed to handle ack message: %v. Closing connection", err)
-			goto cleanup
-		}
 		continue
 	cleanup:
 		conn.Close()
 	}
 }
 
-func NewShim(ctx context.Context, wg *sync.WaitGroup, netnsPath string) (*Shim, error) {
+func NewShim(ctx context.Context, wg *sync.WaitGroup, netnsPaths []string) (*Shim, error) {
 
 	shim := &Shim{
-		netnsPath: netnsPath,
+		netnsPaths: netnsPaths,
 	}
 
 	_, err := os.Stat("/var/run/ztunnel/ztunnel.sock")
