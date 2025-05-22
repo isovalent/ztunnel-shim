@@ -8,11 +8,21 @@ import (
 	"os"
 	"sync"
 	"syscall"
-	"time"
 
 	zdsapi "github.com/isovalent/ztunnel-shim/cni-shim/ztunnel/proto"
 	"google.golang.org/protobuf/proto"
 )
+
+type Config struct {
+	Workloads []Workload
+}
+type Workload struct {
+	UID            string `yaml:"uid"`
+	Name           string `yaml:"name"`
+	Namespace      string `yaml:"namespace"`
+	ServiceAccount string `yaml:"serviceAccount"`
+	NetNS          string `yaml:"netns"`
+}
 
 // The Shim is a replacement for the CNIPod istio component.
 // ZTunnel in shared mode must connect to a unix socket for workload information.
@@ -22,8 +32,8 @@ import (
 //
 // The Shim implements the unix socket and protocol the ZTunnel expects.
 type Shim struct {
-	l          net.Listener
-	netnsPaths []string
+	l         net.Listener
+	workloads []Workload
 }
 
 func (s *Shim) readAck(buf []byte) error {
@@ -69,19 +79,15 @@ func (s *Shim) writeSnapshot(conn net.Conn) error {
 	return nil
 }
 
-func (s *Shim) writeAddWorkload(conn net.Conn, netnsPath string) error {
-	// get nanosecond timestamp
-	timestamp := time.Now().UnixNano()
-	id := fmt.Sprintf("workload-%d", timestamp)
-
+func (s *Shim) writeAddWorkload(conn net.Conn, w *Workload) error {
 	workloadReq := zdsapi.WorkloadRequest{
 		Payload: &zdsapi.WorkloadRequest_Add{
 			Add: &zdsapi.AddWorkload{
-				Uid: id,
+				Uid: w.UID,
 				WorkloadInfo: &zdsapi.WorkloadInfo{
-					Name:           id,
-					Namespace:      id,
-					ServiceAccount: id,
+					Name:           w.Name,
+					Namespace:      w.Namespace,
+					ServiceAccount: w.ServiceAccount,
 				},
 			},
 		},
@@ -97,7 +103,7 @@ func (s *Shim) writeAddWorkload(conn net.Conn, netnsPath string) error {
 		return fmt.Errorf("failed to cast conn to UnixConn")
 	}
 
-	file, err := os.Open(netnsPath)
+	file, err := os.Open(w.NetNS)
 	if err != nil {
 		return fmt.Errorf("failed to open netns file: %v", err)
 	}
@@ -113,7 +119,7 @@ func (s *Shim) writeAddWorkload(conn net.Conn, netnsPath string) error {
 	}
 	log.Printf("wrote %d bytes to connection", n)
 
-	log.Printf("wrote add workload")
+	log.Printf("wrote add workload: %v", workloadReq)
 
 	return nil
 }
@@ -175,22 +181,30 @@ func (s *Shim) listen(ctx context.Context, wg *sync.WaitGroup) {
 
 		// wait for ack
 		n, err = conn.Read(buf)
+		if err != nil {
+			log.Printf("failed to read from connection: %v. Closing connection", err)
+			goto cleanup
+		}
+
 		if err = s.readAck(buf[:n]); err != nil {
 			log.Printf("failed to handle ack message: %v. Closing connection", err)
 			goto cleanup
 		}
 
-		for _, p := range s.netnsPaths {
-			log.Printf("path: %v", p)
-
-			// send a workload add for each netns path
-			if err = s.writeAddWorkload(conn, p); err != nil {
+		for _, w := range s.workloads {
+			// send workload event for configured container
+			if err = s.writeAddWorkload(conn, &w); err != nil {
 				log.Printf("failed to handle add workload message: %v. Closing connection", err)
 				goto cleanup
 			}
 
 			// wait for ack
 			n, err = conn.Read(buf)
+			if err != nil {
+				log.Printf("failed to read from connection: %v. Closing connection", err)
+				goto cleanup
+			}
+
 			if err = s.readAck(buf[:n]); err != nil {
 				log.Printf("failed to handle ack message: %v. Closing connection", err)
 				goto cleanup
@@ -203,10 +217,10 @@ func (s *Shim) listen(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
-func NewShim(ctx context.Context, wg *sync.WaitGroup, netnsPaths []string) (*Shim, error) {
+func NewShim(ctx context.Context, wg *sync.WaitGroup, workloads []Workload) (*Shim, error) {
 
 	shim := &Shim{
-		netnsPaths: netnsPaths,
+		workloads: workloads,
 	}
 
 	_, err := os.Stat("/var/run/ztunnel/ztunnel.sock")

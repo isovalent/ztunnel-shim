@@ -1,0 +1,11 @@
+workloads:
+  - uid: cluster1//v1/Pod/kube-system/netshoot-client
+    name: netshoot-client
+    namespace: kube-system
+    serviceAccount: default
+    netns: "/proc/1728/ns/net"
+  - uid: cluster1//v1/Pod/kube-system/netshoot-server
+    name: netshoot-server
+    namespace: kube-system
+    serviceAccount: default
+    netns: "/proc/1729/ns/net"
